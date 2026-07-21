@@ -1,4 +1,4 @@
-"""adiClub media upload — Streamlit MVP.
+"""adiClub media upload app.
 
 A single-page app where an adiClub member identifies themselves (member ID or
 email) and then uploads a photo or a video. Files are validated (type + size),
@@ -50,6 +50,10 @@ def _load_secrets_into_env() -> None:
         "LOCAL_STORAGE_DIR",
         "AZURE_STORAGE_CONNECTION_STRING",
         "AZURE_STORAGE_CONTAINER",
+        "CLOUDINARY_CLOUD_NAME",
+        "CLOUDINARY_API_KEY",
+        "CLOUDINARY_API_SECRET",
+        "CLOUDINARY_FOLDER",
         "ADMIN_PASSWORD",
     ):
         try:
@@ -258,20 +262,27 @@ def _render_gallery(backend) -> None:
                 f"{item.size_bytes / 1024:.0f} KB · {item.timestamp}"
             )
             st.caption(f"Original: {item.original_filename} — guardado: {item.stored_filename}")
-            data = backend.get(item.stored_filename)
-            if data is None:
-                st.warning("Archivo no encontrado en el almacenamiento.")
-                continue
-            if item.media_type == "image":
-                st.image(data, use_container_width=True)
+            if item.storage_url:
+                if item.media_type == "image":
+                    st.image(item.storage_url, use_container_width=True)
+                else:
+                    st.video(item.storage_url)
+                st.link_button("Abrir archivo", item.storage_url)
             else:
-                st.video(data)
-            st.download_button(
-                "Descargar",
-                data=data,
-                file_name=item.original_filename,
-                key=f"dl_{item.stored_filename}",
-            )
+                data = backend.get(item.stored_filename)
+                if data is None:
+                    st.warning("Archivo no encontrado en el almacenamiento.")
+                    continue
+                if item.media_type == "image":
+                    st.image(data, use_container_width=True)
+                else:
+                    st.video(data)
+                st.download_button(
+                    "Descargar",
+                    data=data,
+                    file_name=item.original_filename,
+                    key=f"dl_{item.stored_filename}",
+                )
 
 
 if __name__ == "__main__":

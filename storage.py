@@ -1,17 +1,18 @@
 """Storage abstraction for adiClub uploads.
 
-Provides an abstract ``StorageBackend`` with two implementations:
+Provides an abstract ``StorageBackend`` with three implementations:
 
-- ``LocalStorageBackend``  — writes files to a local folder (default, no creds).
-- ``AzureBlobStorageBackend`` — writes files to Azure Blob Storage using
-  environment variables (no hardcoded credentials).
+- ``LocalStorageBackend`` — writes files to a local folder (default, no creds).
+- ``AzureBlobStorageBackend`` — writes files to Azure Blob Storage.
+- ``CloudinaryStorageBackend`` — writes files to Cloudinary for public hosting.
 
-Metadata for every upload is appended to a JSON-lines registry stored next to
-the uploaded content, so uploads can be listed/audited later.
+Metadata for every upload is stored alongside the uploaded media so uploads can
+be listed and reviewed later from the admin gallery.
 """
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import uuid
@@ -20,6 +21,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+from urllib.request import urlopen
 
 
 @dataclass
@@ -33,6 +35,7 @@ class UploadMetadata:
     media_type: str  # "image" or "video"
     size_bytes: int
     timestamp: str
+    storage_url: str | None = None
 
     @staticmethod
     def create(
@@ -131,15 +134,7 @@ class LocalStorageBackend(StorageBackend):
 
 
 class AzureBlobStorageBackend(StorageBackend):
-    """Store uploads in Azure Blob Storage.
-
-    Configuration comes from environment variables (no hardcoded secrets):
-
-    - ``AZURE_STORAGE_CONNECTION_STRING`` — the storage account connection string.
-    - ``AZURE_STORAGE_CONTAINER``         — the target container name.
-
-    Metadata is stored as a sibling ``.json`` blob for each upload.
-    """
+    """Store uploads in Azure Blob Storage."""
 
     def __init__(
         self,
@@ -160,7 +155,6 @@ class AzureBlobStorageBackend(StorageBackend):
                 "AZURE_STORAGE_CONTAINER is required for the Azure backend."
             )
 
-        # Imported lazily so the local backend has no hard dependency on azure.
         from azure.storage.blob import BlobServiceClient
 
         self._service = BlobServiceClient.from_connection_string(connection_string)
@@ -169,12 +163,12 @@ class AzureBlobStorageBackend(StorageBackend):
         try:
             self._container.create_container()
         except Exception:
-            # Container already exists (or no permission to create) — continue.
             pass
 
     def save(self, data: bytes, stored_filename: str, metadata: UploadMetadata) -> str:
         blob = self._container.get_blob_client(stored_filename)
         blob.upload_blob(data, overwrite=True)
+        metadata.storage_url = blob.url
 
         meta_blob = self._container.get_blob_client(stored_filename + ".json")
         meta_blob.upload_blob(
@@ -206,14 +200,137 @@ class AzureBlobStorageBackend(StorageBackend):
         return uploads
 
 
-def get_storage_backend() -> StorageBackend:
-    """Select a backend based on the ``STORAGE_BACKEND`` env var.
+class CloudinaryStorageBackend(StorageBackend):
+    """Store uploads and metadata in Cloudinary."""
 
-    ``LOCAL`` (default) requires no credentials so the app runs out of the box.
-    ``AZURE`` uses Azure Blob Storage via environment variables.
-    """
+    def __init__(
+        self,
+        cloud_name: Optional[str] = None,
+        api_key: Optional[str] = None,
+        api_secret: Optional[str] = None,
+        folder: Optional[str] = None,
+    ) -> None:
+        cloud_name = cloud_name or os.getenv("CLOUDINARY_CLOUD_NAME")
+        api_key = api_key or os.getenv("CLOUDINARY_API_KEY")
+        api_secret = api_secret or os.getenv("CLOUDINARY_API_SECRET")
+        folder = folder or os.getenv("CLOUDINARY_FOLDER", "adiclub-upload")
+
+        if not cloud_name:
+            raise ValueError(
+                "CLOUDINARY_CLOUD_NAME is required for the Cloudinary backend."
+            )
+        if not api_key:
+            raise ValueError(
+                "CLOUDINARY_API_KEY is required for the Cloudinary backend."
+            )
+        if not api_secret:
+            raise ValueError(
+                "CLOUDINARY_API_SECRET is required for the Cloudinary backend."
+            )
+
+        import cloudinary
+        import cloudinary.api
+        import cloudinary.uploader
+
+        cloudinary.config(
+            cloud_name=cloud_name,
+            api_key=api_key,
+            api_secret=api_secret,
+            secure=True,
+        )
+
+        self._api = cloudinary.api
+        self._uploader = cloudinary.uploader
+        self._folder = folder.strip("/")
+        self._metadata_prefix = f"{self._folder}/metadata/"
+
+    def save(self, data: bytes, stored_filename: str, metadata: UploadMetadata) -> str:
+        stem = Path(stored_filename).stem
+        ext = Path(stored_filename).suffix.lstrip(".").lower()
+        media_public_id = f"{self._folder}/media/{stem}"
+        metadata_public_id = f"{self._folder}/metadata/{stored_filename}.json"
+
+        upload_result = self._uploader.upload(
+            io.BytesIO(data),
+            resource_type="auto",
+            public_id=media_public_id,
+            format=ext,
+            overwrite=True,
+            use_filename=False,
+            unique_filename=False,
+        )
+        metadata.storage_url = upload_result["secure_url"]
+
+        self._uploader.upload(
+            io.BytesIO(json.dumps(asdict(metadata)).encode("utf-8")),
+            resource_type="raw",
+            public_id=metadata_public_id,
+            overwrite=True,
+            use_filename=False,
+            unique_filename=False,
+        )
+        return metadata.storage_url
+
+    def get(self, stored_filename: str) -> Optional[bytes]:
+        metadata = self._get_metadata(stored_filename)
+        if metadata is None or not metadata.storage_url:
+            return None
+        with urlopen(metadata.storage_url) as response:
+            return response.read()
+
+    def name(self) -> str:
+        return f"Cloudinary ({self._folder})"
+
+    def list_uploads(self) -> list[UploadMetadata]:
+        uploads: list[UploadMetadata] = []
+        next_cursor: str | None = None
+
+        while True:
+            kwargs = {
+                "resource_type": "raw",
+                "type": "upload",
+                "prefix": self._metadata_prefix,
+                "max_results": 500,
+            }
+            if next_cursor:
+                kwargs["next_cursor"] = next_cursor
+            result = self._api.resources(**kwargs)
+
+            for resource in result.get("resources", []):
+                try:
+                    with urlopen(resource["secure_url"]) as response:
+                        uploads.append(
+                            UploadMetadata(**json.loads(response.read().decode("utf-8")))
+                        )
+                except Exception:
+                    continue
+
+            next_cursor = result.get("next_cursor")
+            if not next_cursor:
+                break
+
+        uploads.sort(key=lambda m: m.timestamp, reverse=True)
+        return uploads
+
+    def _get_metadata(self, stored_filename: str) -> UploadMetadata | None:
+        try:
+            resource = self._api.resource(
+                f"{self._folder}/metadata/{stored_filename}.json",
+                resource_type="raw",
+                type="upload",
+            )
+            with urlopen(resource["secure_url"]) as response:
+                return UploadMetadata(**json.loads(response.read().decode("utf-8")))
+        except Exception:
+            return None
+
+
+def get_storage_backend() -> StorageBackend:
+    """Select a backend based on the ``STORAGE_BACKEND`` env var."""
 
     backend = os.getenv("STORAGE_BACKEND", "LOCAL").strip().upper()
     if backend == "AZURE":
         return AzureBlobStorageBackend()
+    if backend == "CLOUDINARY":
+        return CloudinaryStorageBackend()
     return LocalStorageBackend(os.getenv("LOCAL_STORAGE_DIR", "uploads"))
