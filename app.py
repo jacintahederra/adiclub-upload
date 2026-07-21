@@ -22,8 +22,8 @@ from storage import UploadMetadata, build_stored_filename, get_storage_backend
 IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "gif"}
 VIDEO_EXTENSIONS = {"mp4", "mov", "webm"}
 
-MAX_IMAGE_BYTES = 10 * 1024 * 1024   # 10 MB
-MAX_VIDEO_BYTES = 100 * 1024 * 1024  # 100 MB
+MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MB
+MAX_VIDEO_BYTES = 30 * 1024 * 1024  # 30 MB
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -145,7 +145,12 @@ def _render_upload_page(backend) -> None:
     st.title("👟 adiClub — Comparte tu contenido")
     st.caption(
         "Sube una foto o un video como miembro de adiClub. "
-        "Formatos: imágenes (jpg, jpeg, png, webp, gif) o videos (mp4, mov, webm)."
+        "Formatos: imágenes (jpg, jpeg, png, webp, gif) o videos (mp4, mov, webm). "
+        "Límite: imágenes hasta 10 MB y videos hasta 30 MB."
+    )
+    st.info(
+        "Solo se permite un archivo por persona, de preferencia una foto. "
+        "El contenido será de uso interno de adidas y no será compartido con terceros."
     )
 
     _render_identification()

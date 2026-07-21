@@ -8,10 +8,12 @@ Aplicación web en **Streamlit** para que miembros de **adiClub** suban una
 1. Pide al miembro identificarse con **ID de adiClub** o **email**.
 2. Valida formato de email, tipo de archivo y tamaño máximo:
    - imágenes: `jpg`, `jpeg`, `png`, `webp`, `gif` hasta **10 MB**
-   - videos: `mp4`, `mov`, `webm` hasta **100 MB**
+   - videos: `mp4`, `mov`, `webm` hasta **30 MB**
 3. Guarda el archivo con nombre único (`uuid + extensión`).
 4. Muestra preview y confirmación de la subida.
 5. Incluye una **Galería (admin)** protegida con contraseña.
+6. Muestra un disclaimer visible: **un archivo por persona, de preferencia una foto**;
+   el contenido es **de uso interno de adidas** y **no será compartido con terceros**.
 
 ## Backends de almacenamiento
 
