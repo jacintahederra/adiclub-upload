@@ -1,0 +1,2 @@
+streamlit>=1.36
+azure-storage-blob>=12.19
